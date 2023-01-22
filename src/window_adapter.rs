@@ -1,3 +1,4 @@
+use wgpu::SurfaceError;
 use winit::{
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -23,27 +24,53 @@ pub async fn run() {
         Event::WindowEvent {
             window_id,
             ref event,
-        } if window_id == state.window().id() => match event {
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
+        } if window_id == state.window().id() => {
+            // Prioritize the state over the event loop
+            if !state.input(event) {
+                match event {
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Pressed,
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                ..
+                            },
                         ..
-                    },
-                ..
-            } => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(physical_size) => {
-                state.resize(*physical_size);
-            }
+                    } => *control_flow = ControlFlow::Exit,
 
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                // new_inner_size is &&mut so we have to dereference it twice
-                state.resize(**new_inner_size);
+                    WindowEvent::Resized(physical_size) => {
+                        state.resize(*physical_size);
+                    }
+
+                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                        // new_inner_size is &&mut so we have to dereference it twice
+                        state.resize(**new_inner_size);
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
-        },
+        }
+
+        Event::RedrawRequested(window_id) if window_id == state.window().id() => {
+            state.update();
+
+            match state.render() {
+                Ok(_) => {}
+                // Try to reconstruct the surface if lost
+                Err(SurfaceError::Lost) => state.resize(state.size),
+                // The system ran out of memory. We should abandon ship :(
+                Err(SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
+                // All other errors (Outdated, Timeout) should be resolved by the next frame
+                Err(e) => eprintln!("{:?}", e),
+            }
+        }
+
+        Event::MainEventsCleared => {
+            // RedrawRequested will only trigger once unless we manually request it.
+            state.window().request_redraw();
+        }
+
         _ => {}
     });
 }

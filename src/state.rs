@@ -1,5 +1,7 @@
 use wgpu::{
-    Backends, CompositeAlphaMode, Limits, PresentMode, SurfaceConfiguration, TextureUsages,
+    Backends, Color, CommandEncoderDescriptor, CompositeAlphaMode, Limits, LoadOp, Operations,
+    PresentMode, RenderPassColorAttachment, RenderPassDescriptor, SurfaceConfiguration,
+    TextureUsages, TextureViewDescriptor,
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
@@ -8,8 +10,9 @@ pub struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    size: PhysicalSize<u32>,
+    pub size: PhysicalSize<u32>,
     window: Window,
+    clear_color: Color,
 }
 
 impl State {
@@ -66,6 +69,8 @@ impl State {
 
         surface.configure(&device, &config);
 
+        let clear_color = wgpu::Color::BLACK;
+
         Self {
             surface,
             device,
@@ -73,6 +78,7 @@ impl State {
             config,
             size,
             window,
+            clear_color,
         }
     }
 
@@ -89,15 +95,60 @@ impl State {
         }
     }
 
+    // Returns a bool based on wether an event has been fully processed or not.
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        todo!()
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.clear_color = wgpu::Color {
+                    r: position.x as f64 / self.size.width as f64,
+                    g: position.y as f64 / self.size.height as f64,
+                    b: 1.0,
+                    a: 1.0,
+                };
+                true
+            }
+            _ => false,
+        }
     }
 
-    fn update(&mut self) {
-        todo!()
-    }
+    pub fn update(&mut self) {}
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        todo!()
+        let output = self.surface.get_current_texture()?;
+
+        let view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
+
+        // Creates a command encoder that sends commands to the GPU.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        // Rust Tip: Releases any variables once block is done. Releases mut encoder.
+        {
+            let _render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("Render Pass"),
+                // Draws color to the view (TextureView)
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(self.clear_color),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+        }
+
+        // Builds command buffer and sends to GPU render queue.
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        output.present();
+
+        Ok(())
     }
 }
