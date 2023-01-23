@@ -1,12 +1,16 @@
+use bytemuck::cast_slice;
 use wgpu::{
-    Backends, BlendState, Color, ColorTargetState, ColorWrites, CommandEncoderDescriptor,
-    CompositeAlphaMode, FragmentState, FrontFace, Limits, LoadOp, MultisampleState, Operations,
-    PipelineLayoutDescriptor, PolygonMode, PresentMode, PrimitiveState, PrimitiveTopology,
-    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
-    ShaderModuleDescriptor, ShaderSource, SurfaceConfiguration, TextureUsages,
-    TextureViewDescriptor, VertexState,
+    util::{BufferInitDescriptor, DeviceExt},
+    Backends, BlendState, Buffer, BufferUsages, ColorTargetState, ColorWrites,
+    CommandEncoderDescriptor, CompositeAlphaMode, FragmentState, FrontFace, IndexFormat, Limits,
+    MultisampleState, Operations, PipelineLayoutDescriptor, PolygonMode, PresentMode,
+    PrimitiveState, PrimitiveTopology, RenderPassColorAttachment, RenderPassDescriptor,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource,
+    SurfaceConfiguration, TextureUsages, TextureViewDescriptor, VertexState,
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
+
+use crate::vertex::{Vertex, INDICES, VERTICES};
 
 pub struct State {
     surface: wgpu::Surface,
@@ -15,8 +19,11 @@ pub struct State {
     config: wgpu::SurfaceConfiguration,
     pub size: PhysicalSize<u32>,
     window: Window,
-    clear_color: Color,
     render_pipeline: RenderPipeline,
+    vertex_buffer: Buffer,
+    num_vertices: u32,
+    index_buffer: Buffer,
+    num_indices: u32,
 }
 
 impl State {
@@ -73,8 +80,6 @@ impl State {
 
         surface.configure(&device, &config);
 
-        let clear_color = wgpu::Color::BLACK;
-
         // shortcut
         // let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
@@ -96,7 +101,7 @@ impl State {
                 module: &shader,
                 // references the entry point for the vertex shader
                 entry_point: "vs_main",
-                buffers: &[],
+                buffers: &[Vertex::desc()],
             },
             fragment: Some(FragmentState {
                 module: &shader,
@@ -132,6 +137,22 @@ impl State {
             multiview: None,
         });
 
+        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: cast_slice(INDICES),
+            usage: BufferUsages::INDEX,
+        });
+
+        let num_indices = INDICES.len() as u32;
+
+        let num_vertices = VERTICES.len() as u32;
+
         Self {
             surface,
             device,
@@ -139,8 +160,11 @@ impl State {
             config,
             size,
             window,
-            clear_color,
             render_pipeline,
+            vertex_buffer,
+            index_buffer,
+            num_indices,
+            num_vertices,
         }
     }
 
@@ -159,18 +183,7 @@ impl State {
 
     // Returns a bool based on wether an event has been fully processed or not.
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.clear_color = wgpu::Color {
-                    r: position.x as f64 / self.size.width as f64,
-                    g: position.y as f64 / self.size.height as f64,
-                    b: 1.0,
-                    a: 1.0,
-                };
-                true
-            }
-            _ => false,
-        }
+        false
     }
 
     pub fn update(&mut self) {}
@@ -199,7 +212,12 @@ impl State {
                     view: &view,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(self.clear_color),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.1,
+                            g: 0.2,
+                            b: 0.3,
+                            a: 1.0,
+                        }),
                         store: true,
                     },
                 })],
@@ -208,8 +226,15 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
 
+            // Takes the buffer slot to use the vertex buffer. Also takes the slice of the buffer to use. In this case: all of it.
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+
+            // Can only have one index buffer per render pass.
+            render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
+
             // Drawing something with 3 vertices and 1 instance. This is where @builtin(vertex_index) comes from.
-            render_pass.draw(0..3, 0..1);
+            // Draw ignores the index buffer
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
 
         // Builds command buffer and sends to GPU render queue.

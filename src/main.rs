@@ -1,4 +1,5 @@
 mod state;
+mod vertex;
 mod window_adapter;
 
 fn main() {
