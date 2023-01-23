@@ -1,16 +1,26 @@
+use std::num;
+
 use bytemuck::cast_slice;
+use image::GenericImageView;
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    Backends, BlendState, Buffer, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompositeAlphaMode, FragmentState, FrontFace, IndexFormat, Limits,
-    MultisampleState, Operations, PipelineLayoutDescriptor, PolygonMode, PresentMode,
-    PrimitiveState, PrimitiveTopology, RenderPassColorAttachment, RenderPassDescriptor,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource,
-    SurfaceConfiguration, TextureUsages, TextureViewDescriptor, VertexState,
+    AddressMode, Backends, BindGroup, BindGroupDescriptor, BindGroupEntry,
+    BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
+    Buffer, BufferUsages, ColorTargetState, ColorWrites, CommandEncoderDescriptor,
+    CompositeAlphaMode, Extent3d, FilterMode, FragmentState, FrontFace, ImageCopyTexture,
+    ImageDataLayout, IndexFormat, Limits, MultisampleState, Operations, Origin3d,
+    PipelineLayoutDescriptor, PolygonMode, PresentMode, PrimitiveState, PrimitiveTopology,
+    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
+    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, SurfaceConfiguration,
+    TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType,
+    TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
-use crate::vertex::{Vertex, INDICES, VERTICES};
+use crate::{
+    texture::Texture,
+    vertex::{Vertex, INDICES, VERTICES},
+};
 
 pub struct State {
     surface: wgpu::Surface,
@@ -24,6 +34,8 @@ pub struct State {
     num_vertices: u32,
     index_buffer: Buffer,
     num_indices: u32,
+    diffuse_bind_group: BindGroup,
+    diffuse_texture: Texture,
 }
 
 impl State {
@@ -80,6 +92,117 @@ impl State {
 
         surface.configure(&device, &config);
 
+        // Textures
+        let diffuse_bytes = include_bytes!("assets/happy-tree.png");
+        let diffuse_texture =
+            Texture::from_bytes(&device, &queue, diffuse_bytes, "happy-tree.png").unwrap();
+
+        // let diffuse_rgba = diffuse_image.to_rgba8();
+
+        // For creating the texture
+        // let dimensions = diffuse_image.dimensions();
+
+        // let texture_size = Extent3d {
+        //     width: dimensions.0,
+        //     height: dimensions.1,
+        //     depth_or_array_layers: 1,
+        // };
+
+        // let diffuse_texture = device.create_texture(&TextureDescriptor {
+        //     size: texture_size,
+        //     mip_level_count: 1,
+        //     sample_count: 1,
+        //     dimension: TextureDimension::D2,
+        //     // Common storage is srgb
+        //     format: TextureFormat::Rgba8UnormSrgb,
+        //     // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+        //     // COPY_DST means that we want to copy data to this texture
+        //     usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        //     label: Some("diffuse_texture"),
+        // });
+
+        // queue.write_texture(
+        //     ImageCopyTexture {
+        //         texture: &diffuse_texture,
+        //         mip_level: 0,
+        //         origin: Origin3d::ZERO,
+        //         aspect: TextureAspect::All,
+        //     },
+        //     // the pixel data
+        //     &diffuse_rgba,
+        //     // the layout of the texture
+        //     ImageDataLayout {
+        //         offset: 0,
+        //         bytes_per_row: num::NonZeroU32::new(4 * dimensions.0),
+        //         rows_per_image: num::NonZeroU32::new(dimensions.1),
+        //     },
+        //     texture_size,
+        // );
+
+        // let diffuse_texture_view = diffuse_texture.create_view(&TextureViewDescriptor::default());
+
+        // let diffuse_sampler = device.create_sampler(&SamplerDescriptor {
+        //     // address_mode_* determines what the sampler should do when a texture coordinate is outside the texture itself.
+        //     // https://sotrh.github.io/learn-wgpu/assets/img/address_mode.66a7cd1a.png
+        //     // ClampToEdge: Any texture coordinates outside the texture will return the color of the nearest pixel on the edges of the texture.
+        //     // Repeat: The texture will repeat as texture coordinates exceed the texture's dimensions.
+        //     // MirrorRepeat: Similar to Repeat, but the image will flip when going over boundaries.
+        //     address_mode_u: AddressMode::ClampToEdge,
+        //     address_mode_v: AddressMode::ClampToEdge,
+        //     address_mode_w: AddressMode::ClampToEdge,
+        //     // mag and min describe what to do when the sample is smaller than one texel. (This can happen when mapping is far from or close to the camera)
+        //     // Linear: Selects two texels in each dimension and returns a linear interpolation between them.
+        //     // Nearest: Selects the texel closest to the texture coordinates. Crisper far away but pixelated up close. This is okay for games like minecraft or voxel games.
+        //     mag_filter: FilterMode::Linear,
+        //     min_filter: FilterMode::Nearest,
+        //     // TODO: What is this? Basic: They are like mag/min in a way
+        //     mipmap_filter: FilterMode::Nearest,
+        //     ..Default::default()
+        // });
+
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                entries: &[
+                    // For sampled texture
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::FRAGMENT,
+                        ty: BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: TextureViewDimension::D2,
+                            sample_type: TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    // For sampler
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // This should match the filterable field of the
+                        // corresponding Texture entry above.
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+
+        // BindGroup is a more specific decleration of the BindGroupLayout
+        let diffuse_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&diffuse_texture.view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&diffuse_texture.sampler),
+                },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
+
         // shortcut
         // let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
@@ -90,7 +213,7 @@ impl State {
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -165,6 +288,8 @@ impl State {
             index_buffer,
             num_indices,
             num_vertices,
+            diffuse_bind_group,
+            diffuse_texture,
         }
     }
 
@@ -228,6 +353,8 @@ impl State {
 
             // Takes the buffer slot to use the vertex buffer. Also takes the slice of the buffer to use. In this case: all of it.
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+
+            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
 
             // Can only have one index buffer per render pass.
             render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);

@@ -1,3 +1,11 @@
 {
-  "cSpell.words": ["Multisample", "Vsync", "WGPU", "winit"]
+  "cSpell.words": [
+    "Multisample",
+    "texel",
+    "texels",
+    "voxel",
+    "Vsync",
+    "WGPU",
+    "winit"
+  ]
 }
