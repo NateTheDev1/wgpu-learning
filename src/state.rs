@@ -1,5 +1,5 @@
 use bytemuck::cast_slice;
-use cgmath::{perspective, Deg, Matrix4, Point3, Vector3};
+use cgmath::{perspective, Deg, InnerSpace, Matrix4, Point3, Quaternion, Rotation3, Vector3, Zero};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
     Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
@@ -16,6 +16,7 @@ use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
     camera::{Camera, CameraController, CameraUniform},
+    instance::{self, Instance, InstanceRaw},
     texture::Texture,
     vertex::{Vertex, INDICES, VERTICES},
 };
@@ -39,7 +40,16 @@ pub struct State {
     camera_buffer: Buffer,
     camera_bind_group: BindGroup,
     camera_controller: CameraController,
+    instances: Vec<Instance>,
+    instance_buffer: Buffer,
 }
+
+const NUM_INSTANCES_PER_ROW: u32 = 10;
+const INSTANCE_DISPLACEMENT: Vector3<f32> = Vector3::new(
+    NUM_INSTANCES_PER_ROW as f32 * 0.5,
+    0.0,
+    NUM_INSTANCES_PER_ROW as f32 * 0.5,
+);
 
 impl State {
     pub async fn new(window: Window) -> Self {
@@ -278,7 +288,7 @@ impl State {
                 module: &shader,
                 // references the entry point for the vertex shader
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc()],
+                buffers: &[Vertex::desc(), InstanceRaw::desc()],
             },
             fragment: Some(FragmentState {
                 module: &shader,
@@ -330,6 +340,34 @@ impl State {
 
         let num_vertices = VERTICES.len() as u32;
 
+        let instances = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let position = Vector3 {
+                        x: x as f32,
+                        y: 0.0,
+                        z: z as f32,
+                    } - INSTANCE_DISPLACEMENT;
+
+                    let rotation = if position.is_zero() {
+                        Quaternion::from_axis_angle(Vector3::unit_z(), Deg(0.0))
+                    } else {
+                        Quaternion::from_axis_angle(position.normalize(), Deg(45.0))
+                    };
+
+                    Instance { position, rotation }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+
+        let instance_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: cast_slice(&instance_data),
+            usage: BufferUsages::VERTEX,
+        });
+
         Self {
             surface,
             device,
@@ -349,6 +387,8 @@ impl State {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
+            instance_buffer,
+            instances,
         }
     }
 
@@ -423,12 +463,14 @@ impl State {
 
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+
             // Can only have one index buffer per render pass.
             render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
 
             // Drawing something with 3 vertices and 1 instance. This is where @builtin(vertex_index) comes from.
             // Draw ignores the index buffer
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
         }
 
         // Builds command buffer and sends to GPU render queue.
