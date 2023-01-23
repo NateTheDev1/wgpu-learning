@@ -1,23 +1,21 @@
-use std::num;
-
 use bytemuck::cast_slice;
-use image::GenericImageView;
+use cgmath::{perspective, Deg, Matrix4, Point3, Vector3};
 use wgpu::{
     util::{BufferInitDescriptor, DeviceExt},
-    AddressMode, Backends, BindGroup, BindGroupDescriptor, BindGroupEntry,
+    Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
-    Buffer, BufferUsages, ColorTargetState, ColorWrites, CommandEncoderDescriptor,
-    CompositeAlphaMode, Extent3d, FilterMode, FragmentState, FrontFace, ImageCopyTexture,
-    ImageDataLayout, IndexFormat, Limits, MultisampleState, Operations, Origin3d,
-    PipelineLayoutDescriptor, PolygonMode, PresentMode, PrimitiveState, PrimitiveTopology,
-    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
-    SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, SurfaceConfiguration,
-    TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType,
-    TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexState,
+    Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites,
+    CommandEncoderDescriptor, CompositeAlphaMode, FragmentState, FrontFace, IndexFormat, Limits,
+    MultisampleState, Operations, PipelineLayoutDescriptor, PolygonMode, PresentMode,
+    PrimitiveState, PrimitiveTopology, RenderPassColorAttachment, RenderPassDescriptor,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    SurfaceConfiguration, TextureSampleType, TextureUsages, TextureViewDescriptor,
+    TextureViewDimension, VertexState,
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
+    camera::{Camera, CameraController, CameraUniform},
     texture::Texture,
     vertex::{Vertex, INDICES, VERTICES},
 };
@@ -36,6 +34,11 @@ pub struct State {
     num_indices: u32,
     diffuse_bind_group: BindGroup,
     diffuse_texture: Texture,
+    camera: Camera,
+    camera_uniform: CameraUniform,
+    camera_buffer: Buffer,
+    camera_bind_group: BindGroup,
+    camera_controller: CameraController,
 }
 
 impl State {
@@ -203,6 +206,57 @@ impl State {
             label: Some("diffuse_bind_group"),
         });
 
+        let camera = Camera {
+            // Camera is 1 unit up and 2 units back
+            eye: (0.0, 1.0, 2.0).into(),
+            // This looks at the origin point
+            target: (0.0, 0.0, 0.0).into(),
+            // This says which way is "up"
+            up: Vector3::unit_y(),
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+
+        let mut camera_uniform = CameraUniform::new();
+
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Camera Uniform Buffer"),
+            contents: cast_slice(&[camera_uniform]),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                // Only accessing vertex index of shader because the camera can use that to manipulate the vertices
+                entries: &[BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        // Will the buffer change size or not?
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
+
+        let camera_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
+        });
+
+        let camera_controller = CameraController::new(0.1);
+
         // shortcut
         // let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
@@ -213,7 +267,7 @@ impl State {
 
         let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&texture_bind_group_layout],
+            bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -289,7 +343,12 @@ impl State {
             num_indices,
             num_vertices,
             diffuse_bind_group,
+            camera_controller,
             diffuse_texture,
+            camera,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
         }
     }
 
@@ -308,10 +367,15 @@ impl State {
 
     // Returns a bool based on wether an event has been fully processed or not.
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        false
+        self.camera_controller.process_events(event)
     }
 
-    pub fn update(&mut self) {}
+    pub fn update(&mut self) {
+        self.camera_controller.update_camera(&mut self.camera);
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.queue
+            .write_buffer(&self.camera_buffer, 0, cast_slice(&[self.camera_uniform]));
+    }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -355,6 +419,9 @@ impl State {
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.camera_bind_group, &[]);
+
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
 
             // Can only have one index buffer per render pass.
             render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);

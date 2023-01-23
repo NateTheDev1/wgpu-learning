@@ -1,7 +1,7 @@
-use std::mem::size_of;
+
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::{vertex_attr_array, BufferAddress, VertexAttribute, VertexBufferLayout, VertexStepMode};
+use wgpu::{VertexAttribute, VertexBufferLayout};
 
 // POD = Plain Old Data
 // Zeroable = Allows us to use the zeroed() method
