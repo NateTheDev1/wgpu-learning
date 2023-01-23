@@ -1,7 +1,10 @@
 use wgpu::{
-    Backends, Color, CommandEncoderDescriptor, CompositeAlphaMode, Limits, LoadOp, Operations,
-    PresentMode, RenderPassColorAttachment, RenderPassDescriptor, SurfaceConfiguration,
-    TextureUsages, TextureViewDescriptor,
+    Backends, BlendState, Color, ColorTargetState, ColorWrites, CommandEncoderDescriptor,
+    CompositeAlphaMode, FragmentState, FrontFace, Limits, LoadOp, MultisampleState, Operations,
+    PipelineLayoutDescriptor, PolygonMode, PresentMode, PrimitiveState, PrimitiveTopology,
+    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
+    ShaderModuleDescriptor, ShaderSource, SurfaceConfiguration, TextureUsages,
+    TextureViewDescriptor, VertexState,
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
@@ -13,6 +16,7 @@ pub struct State {
     pub size: PhysicalSize<u32>,
     window: Window,
     clear_color: Color,
+    render_pipeline: RenderPipeline,
 }
 
 impl State {
@@ -71,6 +75,63 @@ impl State {
 
         let clear_color = wgpu::Color::BLACK;
 
+        // shortcut
+        // let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        let render_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+
+        let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: VertexState {
+                module: &shader,
+                // references the entry point for the vertex shader
+                entry_point: "vs_main",
+                buffers: &[],
+            },
+            fragment: Some(FragmentState {
+                module: &shader,
+                // references the entry point for the fragment shader
+                entry_point: "fs_main",
+                targets: &[Some(ColorTargetState {
+                    format: config.format,
+                    blend: Some(BlendState::REPLACE),
+                    write_mask: ColorWrites::ALL,
+                })],
+            }),
+            // how to interpret the vertices when converting to triangles
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                // Tells WGPU if a triangle is facing the camera or not.
+                front_face: FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState {
+                // how many samples the pipeline will use
+                count: 1,
+                // Specifies which samples are used. Here we are using all.
+                mask: !0,
+                // Anti-Aliasing related
+                alpha_to_coverage_enabled: false,
+            },
+            // Indicates how many array layers the render attachments can have. We are not rendering any to array textures (None)
+            multiview: None,
+        });
+
         Self {
             surface,
             device,
@@ -79,6 +140,7 @@ impl State {
             size,
             window,
             clear_color,
+            render_pipeline,
         }
     }
 
@@ -129,9 +191,10 @@ impl State {
 
         // Rust Tip: Releases any variables once block is done. Releases mut encoder.
         {
-            let _render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("Render Pass"),
                 // Draws color to the view (TextureView)
+                // This is what @location(0) in the fragment shader targets
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -142,6 +205,11 @@ impl State {
                 })],
                 depth_stencil_attachment: None,
             });
+
+            render_pass.set_pipeline(&self.render_pipeline);
+
+            // Drawing something with 3 vertices and 1 instance. This is where @builtin(vertex_index) comes from.
+            render_pass.draw(0..3, 0..1);
         }
 
         // Builds command buffer and sends to GPU render queue.
