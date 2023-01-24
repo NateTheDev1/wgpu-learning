@@ -5,20 +5,27 @@ use wgpu::{
     Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
     Buffer, BufferBindingType, BufferUsages, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, CompositeAlphaMode, FragmentState, FrontFace, IndexFormat, Limits,
-    MultisampleState, Operations, PipelineLayoutDescriptor, PolygonMode, PresentMode,
-    PrimitiveState, PrimitiveTopology, RenderPassColorAttachment, RenderPassDescriptor,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-    SurfaceConfiguration, TextureSampleType, TextureUsages, TextureViewDescriptor,
-    TextureViewDimension, VertexState,
+    CommandEncoderDescriptor, CompareFunction, CompositeAlphaMode, DepthBiasState,
+    DepthStencilState, FragmentState, FrontFace, IndexFormat, Limits, LoadOp, MultisampleState,
+    Operations, PipelineLayoutDescriptor, PolygonMode, PresentMode, PrimitiveState,
+    PrimitiveTopology, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor,
+    ShaderSource, ShaderStages, StencilState, SurfaceConfiguration, TextureSampleType,
+    TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
 
 use crate::{
+    model::{Model, Vertex},
+    resources::{load_model, DrawModel},
+};
+
+use crate::{
     camera::{Camera, CameraController, CameraUniform},
     instance::{self, Instance, InstanceRaw},
+    model::ModelVertex,
     texture::Texture,
-    vertex::{Vertex, INDICES, VERTICES},
+    vertex::{INDICES, VERTICES},
 };
 
 pub struct State {
@@ -42,6 +49,8 @@ pub struct State {
     camera_controller: CameraController,
     instances: Vec<Instance>,
     instance_buffer: Buffer,
+    depth_texture: Texture,
+    obj_model: Model,
 }
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
@@ -281,6 +290,8 @@ impl State {
             push_constant_ranges: &[],
         });
 
+        let depth_texture = Texture::create_depth_texture(&device, &config, "depth_texture");
+
         let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -288,7 +299,7 @@ impl State {
                 module: &shader,
                 // references the entry point for the vertex shader
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc(), InstanceRaw::desc()],
+                buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
             },
             fragment: Some(FragmentState {
                 module: &shader,
@@ -311,7 +322,13 @@ impl State {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(DepthStencilState {
+                format: Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less, // Tells us when to discard a pixel. LESS means pixels will be drawn front to back.
+                stencil: StencilState::default(), // Controls values for stencil testing. We are not using this.
+                bias: DepthBiasState::default(),
+            }),
             multisample: MultisampleState {
                 // how many samples the pipeline will use
                 count: 1,
@@ -340,14 +357,15 @@ impl State {
 
         let num_vertices = VERTICES.len() as u32;
 
+        const SPACE_BETWEEN: f32 = 3.0;
+
         let instances = (0..NUM_INSTANCES_PER_ROW)
             .flat_map(|z| {
                 (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let position = Vector3 {
-                        x: x as f32,
-                        y: 0.0,
-                        z: z as f32,
-                    } - INSTANCE_DISPLACEMENT;
+                    let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                    let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+
+                    let position = Vector3 { x, y: 0.0, z };
 
                     let rotation = if position.is_zero() {
                         Quaternion::from_axis_angle(Vector3::unit_z(), Deg(0.0))
@@ -367,6 +385,10 @@ impl State {
             contents: cast_slice(&instance_data),
             usage: BufferUsages::VERTEX,
         });
+
+        let obj_model = load_model("cube.obj", &device, &queue, &texture_bind_group_layout)
+            .await
+            .unwrap();
 
         Self {
             surface,
@@ -389,6 +411,8 @@ impl State {
             camera_bind_group,
             instance_buffer,
             instances,
+            depth_texture,
+            obj_model,
         }
     }
 
@@ -401,6 +425,10 @@ impl State {
             self.size = new_size;
             self.config.width = new_size.width;
             self.config.height = new_size.height;
+
+            self.depth_texture =
+                Texture::create_depth_texture(&self.device, &self.config, "depth_texture");
+
             self.surface.configure(&self.device, &self.config);
         }
     }
@@ -450,7 +478,14 @@ impl State {
                         store: true,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }),
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
@@ -471,6 +506,16 @@ impl State {
             // Drawing something with 3 vertices and 1 instance. This is where @builtin(vertex_index) comes from.
             // Draw ignores the index buffer
             render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
+
+            let mesh = &self.obj_model.meshes[0];
+            let material = &self.obj_model.materials[mesh.material];
+
+            render_pass.draw_mesh_instanced(
+                mesh,
+                material,
+                0..self.instances.len() as u32,
+                &self.camera_bind_group,
+            );
         }
 
         // Builds command buffer and sends to GPU render queue.
